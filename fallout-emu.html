@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+<style>
+*{margin:0;padding:0;}
+body {
+	font:13.34px helvetica,arial,freesans,clean,sans-serif;
+	color:black;
+	line-height:1.4em;
+	background-color: #F8F8F8;
+	padding: 0.7em;
+}
+p {
+	margin:1em 0;
+	line-height:1.5em;
+}
+table {
+	font-size:inherit;
+	font:100%;
+	margin:1em;
+}
+table th{border-bottom:1px solid #bbb;padding:.2em 1em;}
+table td{border-bottom:1px solid #ddd;padding:.2em 1em;}
+input[type=text],input[type=password],input[type=image],textarea{font:99% helvetica,arial,freesans,sans-serif;}
+select,option{padding:0 .25em;}
+optgroup{margin-top:.5em;}
+pre,code{font:12px Monaco,"Courier New","DejaVu Sans Mono","Bitstream Vera Sans Mono",monospace;}
+pre {
+	margin:1em 0;
+	font-size:12px;
+	background-color:#eee;
+	border:1px solid #ddd;
+	padding:5px;
+	line-height:1.5em;
+	color:#444;
+	overflow:auto;
+	-webkit-box-shadow:rgba(0,0,0,0.07) 0 1px 2px inset;
+	-webkit-border-radius:3px;
+	-moz-border-radius:3px;border-radius:3px;
+}
+pre code {
+	padding:0;
+	font-size:12px;
+	background-color:#eee;
+	border:none;
+}
+code {
+	font-size:12px;
+	background-color:#f8f8ff;
+	color:#444;
+	padding:0 .2em;
+	border:1px solid #dedede;
+}
+img{border:0;max-width:100%;}
+abbr{border-bottom:none;}
+a{color:#4183c4;text-decoration:none;}
+a:hover{text-decoration:underline;}
+a code,a:link code,a:visited code{color:#4183c4;}
+h2,h3{margin:1em 0;}
+h1,h2,h3,h4,h5,h6{border:0;}
+h1{font-size:170%;border-top:4px solid #aaa;padding-top:.5em;margin-top:1.5em;}
+h1:first-child{margin-top:0;padding-top:.25em;border-top:none;}
+h2{font-size:150%;margin-top:1.5em;border-top:4px solid #e0e0e0;padding-top:.5em;}
+h3{margin-top:1em;}
+hr{border:1px solid #ddd;}
+ul{margin:1em 0 1em 2em;}
+ol{margin:1em 0 1em 2em;}
+ul li,ol li{margin-top:.5em;margin-bottom:.5em;}
+ul ul,ul ol,ol ol,ol ul{margin-top:0;margin-bottom:0;}
+blockquote{margin:1em 0;border-left:5px solid #ddd;padding-left:.6em;color:#555;}
+dt{font-weight:bold;margin-left:1em;}
+dd{margin-left:2em;margin-bottom:1em;}
+sup {
+    font-size: 0.83em;
+    vertical-align: super;
+    line-height: 0;
+}
+* {
+	-webkit-print-color-adjust: exact;
+}
+@media screen and (min-width: 914px) {
+    body {
+        width: 854px;
+        margin:0 auto;
+    }
+}
+@media print {
+	table, pre {
+		page-break-inside: avoid;
+	}
+	pre {
+		word-wrap: break-word;
+	}
+}
+</style>
+<title>Fallout Emu</title>
+
+</head>
+<body>
+<h1>Fallout Emu</h1>
+
+<p>Fallout Emu это эмулятор x86 процессора с расширением в виде реализации части Win32 API, для того, чтобы сделать возможным запуск на нем игры Fallout 2. На данной странице будет освещаться обновление статуса проекта.</p>
+
+<p>Alexander Smirnov, alexander@smirn0v.ru</p>
+
+<h2>17 DECEMBER 2015 23:52</h2>
+
+<p>Решил начать вести записи по проекту. Сейчас первый кадр выглядит так <img src="./fallout-emu/first-frame-17-dec-2015.png" alt="image" />
+В красных тонах потому что мне сильно не до детальных разбирательств с DirectDraw которому уже лет 15 и пока лень разбираться с палитрой.
+С помощью SpriteKit довольно быстро получилось сделать простейшее приложение, которое закидывает в текстуру данные полученные от эмулятора и выводит кадры игры.</p>
+
+<p>Можно посмотреть видео: <a href="https://www.dropbox.com/s/grwi5uoidkfy4lu/fallout-emu-17-dec-2015.mov?dl=0">первые кадры</a></p>
+
+<p>Видно:</p>
+
+<ul>
+<li>Картинка появляется где-то на 1.6 миллиардной инструкции процессора</li>
+<li>Скорость где-то 18-19 тыс. инструкций в миллисекунду, позже падает</li>
+<li>FPS от 2 до 10. Но 10 только, когда кадр почти пустой</li>
+</ul>
+
+
+<p>Сейчас основная проблема это скорость. 2 FPS это конечно не интересно. Последние изменения, которые делал для скорости следующие:</p>
+
+<ul>
+<li>Изменил реализацию виртуальной памяти. Теперь все адресное пространство процесса бьется на блоки по 4KB, аллокация происходит только на начало таких блоков. Есть shadow массив, где каждый элемент соответствует 1 блоку в 4KB. Элемент массива это указатель на полный аллоцированный блок, который представлен структурой FEMemoryMapBlock. Т.е. теперь при обращении к какому-то адресу виртуальной памяти можно просто разделить его на 4KB и получить индекс в shadow массиве, взять real address из FEMemoryMapBlock и прибавить к нему оставшееся смещение. Т.е. в операции нет никаких сравнений, поисков и т.п. Это дало выйгрыш где-то на 1.5-2K инструкций в миллисекунду по сравнению с прошлой реализацией где блок в 4KB мог содержать несколько реальных блоков.</li>
+<li>В функциях записи, чтения регистров по имени сделал массив с указателями на все регистры, так, что по enum имени регистра можно в массиве получить сразу указатель на регистр. Т.е. избавился от switch. Выигрыш дало, но не существенный. Оно изначально не сильно в топе было, сейчас просто вообще не видно этого в профайлере.</li>
+</ul>
+
+
+<p>Баги с которыми столкнулся в последнее время:</p>
+
+<ul>
+<li>Раньше в реализации мапинга виртуальной памяти на реальную одному блоку в 4KB могло присваиваться несколько лишних блоков реальной памяти. Это било только по скорости, т.к. раньше еще и проверки были на то действительно ли блок содержит искомый адрес. Теперь проверок вообще нет. Вероятно надо будет сделать в спец. режиме – включенные проверки, т.к. сейчас получается, что если будет проблема в этой области, то упадет хостовое приложение запустившее эмулятор.</li>
+<li>Флаг процессора <strong>OF</strong> не обновлялся по итогам многих инструкций, т.к. почему-то упустил его выставление из слова. Странно, что это так редко стреляло.</li>
+<li>Периодически падал эмулятор где-то на инструкции <strong>SCASB</strong>. Эта инструкция используется для того, чтобы найти байт с определенным значением в строк. Используется с префиксом повторения rep/repne. Например для поиска конца строки. <strong>SCASB</strong> движется влево или вправо по строке в зависимости от значения флага <strong>DF</strong> процессора. В ходе отладки увидел, что <strong>DF</strong> был выставлен в 1, что приводило к движению "влево". А искался символ конца строки... Пытаясь понять, кто же все-таки поменял <strong>DF</strong> на 1 увидел, что никто. Проблема была лишь в том, что после выделения памяти под флаги процессора, я просто не инициализировал эту память и периодически <strong>DF</strong> получал случайно значение 1, которое в последствии ни одна инструкция не меняла. Вообще не много инструкций <strong>DF</strong> затрагивают. Очевидная ошибка.</li>
+</ul>
+
+</body>
+</html>
