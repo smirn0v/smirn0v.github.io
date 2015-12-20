@@ -105,6 +105,172 @@ sup {
 
 <p>Alexander Smirnov, alexander@smirn0v.ru</p>
 
+<h2>20 DECEMBER 2015 03:58</h2>
+
+<p>Branch'инг зло. Нужно избегать условий, так будет работать быстрее. Но не всегда все так просто. Думал, что смогу улучшить следующий блок кода:</p>
+
+<pre><code>uint32_t beu_load_arg_value(ARGTYPE * arg, uint32_t immediat, FEProcessContext *process) {
+    FEBitWidth bitWidth = (FEBitWidth)arg-&gt;ArgSize;
+
+    if(arg-&gt;ArgType &amp; REGISTER_TYPE) {
+        if(arg-&gt;ArgType &amp; GENERAL_REG) {
+            FERegisterName regName = beu_register_from_argtype(arg-&gt;ArgType, arg-&gt;ArgPosition,  bitWidth);
+            return fe_threadContext_register(process-&gt;currentThread, regName, bitWidth);
+        } else if (arg-&gt;ArgType &amp; SEGMENT_REG) {
+            FERegisterName regName = beu_seg_register_from_argtype(arg-&gt;ArgType);
+            return fe_threadContext_register(process-&gt;currentThread, regName, bitWidth);
+        } else {
+            assert(false);
+        }
+    } else if(arg-&gt;ArgType &amp; MEMORY_TYPE) {
+        return beu_load(arg, process, bitWidth);
+    } else if(arg-&gt;ArgType &amp; CONSTANT_TYPE) {
+        return (uint32_t)beu_sign_extend(immediat, bitWidth);
+    }
+
+    assert(false);
+    return 0;
+}
+</code></pre>
+
+<p>if/if/else if и т.п. Можно попробовать от этого избавиться сделав безусловные переходы на основе констант. Получилось, используя пару трюков.</p>
+
+<pre><code>uint32_t beu_load_arg_value(ARGTYPE * arg, uint32_t immediat, FEProcessContext *process) {
+    static const void* flow[9][2049] = {
+        {},
+        {},
+        { // REGISTER_TYPE
+            [0 ... 1] = (void*)0,
+            &amp;&amp;GENERAL_REGISTER_FLOW, // GENERAL_REG
+            [3 ... 255] = (void*)0,
+            &amp;&amp;SEGMENT_REGISTER_FLOW,  // SEGMENT_REG
+            [257 ... 2048] = (void*)0
+        },
+        {}, //3
+        {[0 ... 2048] = &amp;&amp;MEMORY_TYPE_FLOW}, // MEMORY_TYPE
+        {}, //5
+        {}, //6
+        {}, //7
+        {[0 ... 2048] = &amp;&amp;CONSTANT_TYPE_FLOW}, //CONSTANT_TYPE
+    };
+
+    goto *flow[(arg-&gt;ArgType &gt;&gt; 28)&amp;0xf][(arg-&gt;ArgType&gt;&gt;16)&amp;0xfff];
+
+    GENERAL_REGISTER_FLOW: {
+        FERegisterName regName = beu_register_from_argtype(arg-&gt;ArgType, arg-&gt;ArgPosition,  (FEBitWidth)arg-&gt;ArgSize);
+        return fe_threadContext_register(process-&gt;currentThread, regName, (FEBitWidth)arg-&gt;ArgSize);
+    };
+
+    SEGMENT_REGISTER_FLOW: {
+        FERegisterName regName = beu_seg_register_from_argtype(arg-&gt;ArgType);
+        return fe_threadContext_register(process-&gt;currentThread, regName, (FEBitWidth)arg-&gt;ArgSize);
+    };
+
+    MEMORY_TYPE_FLOW: {
+        return beu_load(arg, process, (FEBitWidth)arg-&gt;ArgSize);
+    };
+
+    CONSTANT_TYPE_FLOW: {
+        return (uint32_t)beu_sign_extend(immediat, (FEBitWidth)arg-&gt;ArgSize);
+    };
+
+    assert(false);
+    return 0;
+}
+</code></pre>
+
+<p>Новое для меня тут было использование адресов goto меток.
+http://blog.llvm.org/2010/01/address-of-label-and-indirect-branches.html
+https://gcc.gnu.org/onlinedocs/gcc/Labels-as-Values.html#Labels-as-Values</p>
+
+<p>Это должно давать отличный прирост, ведь мы уходим от условных переходов совсем.</p>
+
+<p>Второе, это designated array initializer для массивов. Строки вида <strong>[0 ... 2048] = some</strong>
+https://gcc.gnu.org/onlinedocs/gcc/Designated-Inits.html</p>
+
+<p>Проблема лишь в том, что вместо нескольких условных переходов, часть из которых и не выполняется новый код содержит несколько побитовых сдвигов, побитовое "и" и еще умножение ([i][j] же превращается в i * sizeof(type) * 2049+j * sizeof(type)).
+<img src="./fallout-emu/beu-load-arg-value-asm-19-dec-2015.png" alt="image" /></p>
+
+<p>Сдвиг на на 16 бит и побитовое "и" с 0xfff</p>
+
+<pre><code>shrl $16, %ecx
+andl $4095
+</code></pre>
+
+<p>Сдвиг на 28 бит. Побитовое "и" ушло с оптимизацией, т.к. использовался 32 битный регистр %eax и после сдвига остается 4 бита, нет смысла делать "и".</p>
+
+<pre><code>shrl $28, %eax
+</code></pre>
+
+<p>Умножаем результат сдвига на 28 на 16392, что есть 2049 умноженное на размер указателя void*. 2049 * 8 = 16392. У меня 64 bit система, поэтому 8 байт на указатель.</p>
+
+<pre><code>imulq $16392, %rax, %rax
+</code></pre>
+
+<p>Массив <strong>flow</strong> находится по какому-то смещению относительно текущего места исполнения. Используя relative addressing добавляем к базовому результату уже лежащему в <strong>%rax</strong></p>
+
+<pre><code>leaq 73631(%rip), %rdx
+addq %rax, %rdx
+</code></pre>
+
+<p>Теперь долгожданный <strong>безусловный</strong> переход. Синтаксис * (base, index, scale) обозначает взять значение по адресу base + index*scale. Т.е. именно тут мы наконец домножили на 8, т.е. на размер указателя на void на 64bit системе.</p>
+
+<pre><code>jmpq *(%rdx,%rcx,8)
+</code></pre>
+
+<p>Все это проигрывает простому предыдущему варианту начала
+<img src="./fallout-emu/beu-load-arg-value-asm-non-optimized-but-fast-19-dec-2015.png" alt="image" />
+Кажется, что на первый взгляд проблема в большом количестве арифметики. Это просто решается.</p>
+
+<pre><code>static const void* flow[65535] = {
+        [0 ... 8193] = &amp;&amp;FAIL_FLOW,
+        &amp;&amp;GENERAL_REGISTER_FLOW, // REGISTER_TYPE | GENERAL_REG
+        [8195 ... 8447] = &amp;&amp;FAIL_FLOW,
+        &amp;&amp;SEGMENT_REGISTER_FLOW,
+        [8449 ... 16383] = &amp;&amp;FAIL_FLOW,
+        &amp;&amp;MEMORY_TYPE_FLOW,
+        [16385 ... 32767] = &amp;&amp;FAIL_FLOW,
+        &amp;&amp;CONSTANT_TYPE_FLOW, // CONSTANT_TYPE
+        [32769 ... 33791] = &amp;&amp;FAIL_FLOW,
+        &amp;&amp;CONSTANT_TYPE_FLOW, // CONSTANT_TYPE | RELATIVE_
+        [33793 ... 34815] = &amp;&amp;FAIL_FLOW,
+        &amp;&amp;CONSTANT_TYPE_FLOW, // CONSTANT_TYPE | ABSOLUTE_
+        [34817 ... 65534] = &amp;&amp;FAIL_FLOW
+    };
+
+    goto *flow[*((uint16_t*)(&amp;arg-&gt;ArgType)+1)];
+</code></pre>
+
+<p>Массив теперь одномерный, а для того, чтобы не нужно было делать никаких смещений  можно обратиться сразу к нужному слову из ArgType. Это дает такой итог
+<img src="./fallout-emu/beu-load-arg-value-asm-1-rang-array-19-dec-2015.png" alt="image" />
+Действительно индекс из <strong>ArgType</strong> достается одной командой</p>
+
+<pre><code>movzwl 66(%rbx), %eax
+</code></pre>
+
+<p>66 байт смещение от <strong>%rbx</strong> из-за структуры <strong>ARGTYPE</strong></p>
+
+<pre><code>#pragma pack(1)
+typedef struct  {
+   char ArgMnemonic[64];
+   Int32 ArgType;
+   Int32 ArgSize;
+   Int32 ArgPosition;
+   UInt32 AccessMode;
+   MEMORYTYPE Memory;
+   UInt32 SegmentReg;
+} ARGTYPE;
+#pragma pack()
+</code></pre>
+
+<p>Т.е. пропускается 64 байта от <strong>ArgMnemonic</strong> и потом еще 2 байта от <strong>ArgType</strong> т.о. получая второе слово из <strong>ArgType</strong>. Тут интересный момент. Инструкция <strong>movzwl</strong> здесь работает только с <strong>%eax</strong>, но на самом деле на x86_64 <strong>mov</strong>, который работает с 32bit регистрами автоматически обнуляет верхнюю часть соответствующего 64bit регистра. Именно за счет этого <strong>jmpq</strong> ниже, использующий  <strong>%rax</strong> работает корректно.</p>
+
+<p>Что же в итоге ?..</p>
+
+<p>Последний вариант при повторных замерах все-равно проигрывает оригинальному с if/else/else if где-то на 1K инструкций в миллисекунду. На самом деле результат еще мажется тем, что вот эта вот часть с бранчингом она и не была узким местом функции. Узкое место в дальнейших вызовах, возможно после их оптимизации можно будет вернуться к этому вопросу, а пока сложно сделать вывод "почему", когда слишком много еще всего в функции, что вероятно по другому оптимизируется компилятором в зависимости от начала функции.</p>
+
+<p>Но было интересно, да.</p>
+
 <h2>17 DECEMBER 2015 23:52</h2>
 
 <p>Решил начать вести записи по проекту. Сейчас первый кадр выглядит так <img src="./fallout-emu/first-frame-17-dec-2015.png" alt="image" />
