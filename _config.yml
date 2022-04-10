@@ -12,8 +12,8 @@ author: Alexander Smirnov
 
 # The domain of your website and the location (baseurl) of your jekyll site
 ## THIS IS MANDATORY
-url: "smirn0v.ru"
-baseurl: "smirn0v.ru"
+url: ""
+baseurl: ""
 
 # site wide kill switch for MathJaX
 enable-math: true 
